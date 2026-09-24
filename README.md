@@ -7,20 +7,43 @@ A Streamlit dashboard for exploring NBD programme performance at county and ward
 - Public-mode dashboard that reads from the NBD API without login or token requirements
 - Focused on the Pollution Reporting Form only
 - Uses approved submissions only and removes repeated API rows returned for the same submission
-- Shows KPI cards, weekly trends, cumulative submissions, champions by ward, channel breakdown, and ward breakdown
-- Supports interactive chart drilldown so clicking a chart item reveals the underlying submissions in a table
 - Cascading basin, county, sub-county and ward filters built from the public spatial reference list
+- Interactive chart drilldown: clicking a chart item reveals the underlying submissions in a table, with CSV export
+- Data is cached for 15 minutes, with a **Refresh data** button in the sidebar to reload on demand
+
+### KPI cards
+
+| Card | Meaning |
+| --- | --- |
+| Total Submitters | Distinct people with an approved report under the active filters |
+| Active locations | Distinct reported locations |
+| Total submissions | Approved submissions carrying a valid timestamp |
+| Current week | This week's submissions, with the percentage change against the previous week |
+
+### Charts
+
+| Chart | Clickable | Notes |
+| --- | --- | --- |
+| Weekly submission rate | Yes | Filters the table to the clicked week |
+| Weekly submissions by channel | Yes | WhatsApp and USSD, inferred from the `wa-` / `ussd-` submitter prefix |
+| Submissions by ward | Yes | Filters the table to the clicked ward |
+| Submissions by incident type | Yes | Fixed per-incident hues that survive filtering, chosen per light/dark theme; incidents beyond the palette fold into a single "Other" bar that still drills down to all of them |
+| Champions per ward | Yes | One bar per ward, labelled with its champion — the person with the most approved reports there. Clicking a bar lists that champion's approved reports in that ward |
+| Cumulative submissions | No | Running total over time |
+
+Champions are derived from the submissions themselves rather than the protected users endpoint, so they are available in public mode.
 
 ## Project structure
 
-- `app.py` — Streamlit application entry point
-- `src/api.py` — API client and authentication helpers
-- `src/spatial.py` — Spatial reference hierarchy (region → county → sub-county → ward)
+- `app.py` — Streamlit application entry point: layout, sidebar filters, chart selection handling
+- `src/api.py` — API client, configuration loading and authentication helpers
+- `src/spatial.py` — Spatial reference hierarchy (basin → county → sub-county → ward)
 - `src/filters.py` — Sidebar filter helpers
-- `src/transforms.py` — Data cleaning and dataframe preparation
-- `src/metrics.py` — KPI and metric calculations
-- `src/charts.py` — Plotly chart builders
-- `tests/` — pytest coverage for the data layer and metrics
+- `src/transforms.py` — Pollution-form filtering, deduplication, cleaning and dataframe preparation
+- `src/metrics.py` — KPI and metric calculations, including ward champions and the champion drilldown
+- `src/charts.py` — Plotly chart builders and the incident-type colour system
+- `scripts/get_nbd_session.py` — Helper for obtaining an NBD API session via the Google auth flow
+- `tests/` — pytest coverage for the data layer, metrics and charts
 
 ## Local setup
 
@@ -39,7 +62,8 @@ A Streamlit dashboard for exploring NBD programme performance at county and ward
    NBD_API_TOKEN = ""
    ```
 
-   Save this in `.streamlit/secrets.toml`.
+   Save this in `.streamlit/secrets.toml`. Both settings are also read from the
+   environment, so `NBD_API_URL` and `NBD_API_TOKEN` work as environment variables.
 
    The dashboard runs in public mode by default. When `NBD_API_TOKEN` is empty, it loads the public submissions endpoint and skips the protected users/champions request.
 
@@ -49,3 +73,13 @@ A Streamlit dashboard for exploring NBD programme performance at county and ward
    streamlit run app.py
    ```
 
+## Tests
+
+```bash
+pytest -q                                  # full suite
+pytest -q --cov=src --cov-report=term-missing   # with coverage
+```
+
+The suite covers the API client, transforms, spatial hierarchy, filters, metrics and
+chart builders. `src/` coverage currently sits at 91%. The coverage run needs
+`pytest-cov`, which is not in `requirements.txt` — install it separately if you want it.
