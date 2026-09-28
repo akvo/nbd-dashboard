@@ -16,7 +16,6 @@ def build_champions_per_ward_chart(champions_per_ward: pd.DataFrame):
         x="champions",
         y="ward",
         orientation="h",
-        title="Champions per Ward",
         color="champions",
         color_continuous_scale="Viridis",
     )
@@ -33,6 +32,26 @@ def build_cumulative_submissions_chart(cumulative_submissions: pd.DataFrame):
         y="cumulative_submissions",
         title="Cumulative Submissions",
     )
+
+
+def build_daily_submissions_chart(daily_submissions: pd.DataFrame):
+    """Create a line chart of daily submission counts."""
+    if daily_submissions.empty:
+        return px.line(pd.DataFrame(columns=["date", "submissions"]), x="date", y="submissions")
+
+    figure = px.line(
+        daily_submissions,
+        x="date",
+        y="submissions",
+        title="Daily Submissions",
+        markers=True,
+        custom_data=["date"],
+    )
+    figure.update_traces(
+        hovertemplate="<b>%{x|%d %b %Y}</b><br>Submissions: %{y}<extra></extra>",
+    )
+    figure.update_layout(xaxis_title="", yaxis_title="Submissions")
+    return figure
 
 
 def build_weekly_submissions_chart(weekly_submissions: pd.DataFrame):
@@ -81,7 +100,6 @@ def build_submissions_by_ward_chart(submissions_by_ward: pd.DataFrame):
         x="submissions",
         y="ward",
         orientation="h",
-        title="Submissions by Ward",
         color="submissions",
         color_continuous_scale="Viridis",
         custom_data=["ward"],
@@ -118,6 +136,14 @@ DEFAULT_THEME = "light"
 OTHER_INCIDENT_TYPE = "Other"
 OTHER_INCIDENT_TYPE_COLOURS: dict[str, str] = {"light": "#7a7973", "dark": "#94938a"}
 
+# The surface each palette was validated against, and the colour the 2px gap
+# between touching marks is drawn in. These are Streamlit's own backgrounds.
+CHART_SURFACES: dict[str, str] = {"light": "#ffffff", "dark": "#0e1117"}
+
+DONUT_HOLE = 0.55
+SLICE_GAP = 2
+DONUT_HEIGHT = 500
+
 # Room left past the longest bar for the label drawn beyond its end.
 LABEL_HEADROOM = 1.45
 CHART_HEIGHT_PER_ROW = 34
@@ -126,6 +152,10 @@ MIN_CHART_HEIGHT = 320
 
 def _palette(theme: str | None) -> tuple[str, ...]:
     return INCIDENT_TYPE_COLOURS.get(str(theme), INCIDENT_TYPE_COLOURS[DEFAULT_THEME])
+
+
+def _surface(theme: str | None) -> str:
+    return CHART_SURFACES.get(str(theme), CHART_SURFACES[DEFAULT_THEME])
 
 
 def incident_type_colour_map(incident_types: Iterable[str], theme: str | None = DEFAULT_THEME) -> dict[str, str]:
@@ -198,19 +228,18 @@ def build_submissions_by_incident_type_chart(
     incident_types: Iterable[str] | None = None,
     theme: str | None = DEFAULT_THEME,
 ):
-    """Create a horizontal bar chart of submission counts per incident type.
+    """Create a donut chart of submission counts per incident type.
 
     ``incident_types`` is the complete, unfiltered list of incident types; it keeps
     the hues stable while the dashboard filters narrow the chart down. ``theme``
     selects the palette validated for the surface the chart is drawn on.
     """
     if submissions_by_incident_type.empty:
-        return px.bar(
+        return px.pie(
             pd.DataFrame(columns=["incident_type", "submissions"]),
-            x="submissions",
-            y="incident_type",
-            color="incident_type",
-            orientation="h",
+            names="incident_type",
+            values="submissions",
+            hole=DONUT_HOLE,
         )
 
     if incident_types is None:
@@ -219,29 +248,46 @@ def build_submissions_by_incident_type_chart(
     colour_map = incident_type_colour_map(incident_types, theme)
     chart_df = _fold_extra_incident_types(submissions_by_incident_type, colour_map)
 
-    figure = px.bar(
+    figure = px.pie(
         chart_df,
-        x="submissions",
-        y="incident_type",
-        orientation="h",
+        names="incident_type",
+        values="submissions",
+        hole=DONUT_HOLE,
         title="Reported Incidents by Type",
         color="incident_type",
         color_discrete_map=colour_map,
-        category_orders={"incident_type": chart_df["incident_type"].tolist()},
-        text="submissions",
         custom_data=["incident_type"],
     )
-    figure.update_traces(textposition="outside", cliponaxis=False)
-    figure.update_layout(
-        # Every bar is already named on the y axis, so a legend would repeat the
-        # same labels; identity never rests on colour alone here.
-        showlegend=False,
-        xaxis_title="Submissions",
-        yaxis_title="",
-        bargap=0.3,
-        margin={"l": 8, "r": 40},
+    figure.update_traces(
+        # The frame already arrives ordered by count, and the slices follow it.
+        sort=False,
+        direction="clockwise",
+        # Each slice names itself, so telling two incidents apart never depends
+        # on matching their hue to a legend swatch.
+        textinfo="label+percent",
+        texttemplate="%{label}<br>%{percent:.0%}",
+        textposition="outside",
+        automargin=True,
+        marker={"line": {"color": _surface(theme), "width": SLICE_GAP}},
+        hovertemplate="<b>%{label}</b><br>Submissions: %{value} (%{percent})<extra></extra>",
     )
-    figure.update_yaxes(automargin=True)
+    # The hole is the natural place for the figure the slices are shares of.
+    total_submissions = int(chart_df["submissions"].sum())
+    figure.add_annotation(
+        text=f"<b>{total_submissions:,}</b><br>submissions",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        align="center",
+    )
+    figure.update_layout(
+        # Every slice is named where it is drawn, so a legend would repeat those
+        # names and crowd out the labels themselves; identity never rests on
+        # colour alone here.
+        showlegend=False,
+        margin={"l": 8, "r": 8, "t": 64, "b": 8},
+        height=DONUT_HEIGHT,
+    )
     return figure
 
 
@@ -260,7 +306,6 @@ def build_ward_champions_chart(ward_champions: pd.DataFrame):
         x="reports",
         y="ward",
         orientation="h",
-        title="Champions per Ward",
         color="reports",
         color_continuous_scale="Viridis",
         category_orders={"ward": ward_champions["ward"].astype(str).tolist()},

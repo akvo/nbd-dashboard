@@ -3,8 +3,10 @@ from __future__ import annotations
 import pandas as pd
 
 from src.charts import (
+    CHART_SURFACES,
     INCIDENT_TYPE_COLOURS,
     OTHER_INCIDENT_TYPE,
+    build_daily_submissions_chart,
     build_submissions_by_incident_type_chart,
     build_submissions_by_ward_chart,
     build_weekly_submissions_by_channel_chart,
@@ -13,6 +15,7 @@ from src.charts import (
 )
 from src.metrics import (
     champions_per_ward,
+    daily_submissions,
     cumulative_submissions,
     normalize_incident_type_names,
     submissions_by_incident_type,
@@ -177,6 +180,69 @@ def test_submissions_by_incident_type_handles_empty_input():
     assert list(result.columns) == ["incident_type", "submissions"]
 
 
+def _slice_colours(fig) -> dict[str, str]:
+    trace = fig.data[0]
+    return dict(zip(trace.labels, trace.marker.colors))
+
+
+def test_incident_type_chart_is_a_donut():
+    counts = submissions_by_incident_type(
+        [{"incident_type_name": name, "submission_id": index} for index, name in enumerate(["Storm event", "No water"])]
+    )
+
+    trace = build_submissions_by_incident_type_chart(counts).data[0]
+
+    assert trace.type == "pie"
+    assert trace.hole > 0
+
+
+def test_incident_type_chart_orders_slices_by_count():
+    submissions = [
+        {"incident_type_name": "Low water level", "submission_id": 1},
+        {"incident_type_name": "Storm event", "submission_id": 2},
+        {"incident_type_name": "Storm event", "submission_id": 3},
+    ]
+
+    trace = build_submissions_by_incident_type_chart(submissions_by_incident_type(submissions)).data[0]
+
+    assert list(trace.labels) == ["Storm event", "Low water level"]
+    assert trace.sort is False
+
+
+def test_incident_type_chart_names_every_slice_on_the_slice_itself():
+    """Identity must not rest on hue alone, so each slice carries its own name."""
+    counts = submissions_by_incident_type(
+        [{"incident_type_name": name, "submission_id": index} for index, name in enumerate(["Storm event", "No water"])]
+    )
+
+    trace = build_submissions_by_incident_type_chart(counts).data[0]
+
+    assert "label" in trace.textinfo
+
+
+def test_incident_type_chart_separates_slices_with_the_surface_colour():
+    counts = submissions_by_incident_type(
+        [{"incident_type_name": name, "submission_id": index} for index, name in enumerate(["Storm event", "No water"])]
+    )
+
+    light = build_submissions_by_incident_type_chart(counts, theme="light").data[0]
+    dark = build_submissions_by_incident_type_chart(counts, theme="dark").data[0]
+
+    assert light.marker.line.color == CHART_SURFACES["light"]
+    assert dark.marker.line.color == CHART_SURFACES["dark"]
+    assert light.marker.line.width > 0
+
+
+def test_incident_type_chart_shows_the_total_in_the_hole():
+    counts = submissions_by_incident_type(
+        [{"incident_type_name": "Storm event", "submission_id": index} for index in range(7)]
+    )
+
+    fig = build_submissions_by_incident_type_chart(counts)
+
+    assert any("7" in (annotation.text or "") for annotation in fig.layout.annotations)
+
+
 def test_incident_type_chart_exposes_selection_metadata():
     submissions = [
         {"incident_type_name": "Low water level", "submission_id": 1},
@@ -185,8 +251,8 @@ def test_incident_type_chart_exposes_selection_metadata():
 
     fig = build_submissions_by_incident_type_chart(submissions_by_incident_type(submissions))
 
-    assert len(fig.data) == 2
-    assert all(trace.customdata is not None for trace in fig.data)
+    assert len(fig.data) == 1
+    assert [row[0] for row in fig.data[0].customdata] == list(fig.data[0].labels)
 
 
 def test_incident_type_chart_colours_each_incident_distinctly():
@@ -197,7 +263,7 @@ def test_incident_type_chart_colours_each_incident_distinctly():
 
     fig = build_submissions_by_incident_type_chart(submissions_by_incident_type(submissions))
 
-    colours = [trace.marker.color for trace in fig.data]
+    colours = list(fig.data[0].marker.colors)
     assert len(set(colours)) == len(colours)
 
 
@@ -208,14 +274,8 @@ def test_incident_type_chart_keeps_colours_stable_when_filtered():
     )
     filtered = submissions_by_incident_type([{"incident_type_name": "Storm event", "submission_id": 1}])
 
-    full_colours = {
-        trace.name: trace.marker.color
-        for trace in build_submissions_by_incident_type_chart(full, all_types).data
-    }
-    filtered_colours = {
-        trace.name: trace.marker.color
-        for trace in build_submissions_by_incident_type_chart(filtered, all_types).data
-    }
+    full_colours = _slice_colours(build_submissions_by_incident_type_chart(full, all_types))
+    filtered_colours = _slice_colours(build_submissions_by_incident_type_chart(filtered, all_types))
 
     assert filtered_colours["Storm event"] == full_colours["Storm event"]
 
@@ -228,9 +288,9 @@ def test_incident_type_chart_folds_incidents_beyond_the_palette():
 
     fig = build_submissions_by_incident_type_chart(counts, all_types)
 
-    trace_names = [trace.name for trace in fig.data]
-    assert len(trace_names) == len(INCIDENT_TYPE_COLOURS["light"]) + 1
-    assert OTHER_INCIDENT_TYPE in trace_names
+    slice_labels = list(fig.data[0].labels)
+    assert len(slice_labels) == len(INCIDENT_TYPE_COLOURS["light"]) + 1
+    assert OTHER_INCIDENT_TYPE in slice_labels
 
 
 def test_incident_type_chart_handles_empty_input():
@@ -247,8 +307,8 @@ def test_incident_type_chart_uses_dark_palette_on_dark_theme():
     light = build_submissions_by_incident_type_chart(counts, theme="light")
     dark = build_submissions_by_incident_type_chart(counts, theme="dark")
 
-    light_colours = {trace.name: trace.marker.color for trace in light.data}
-    dark_colours = {trace.name: trace.marker.color for trace in dark.data}
+    light_colours = _slice_colours(light)
+    dark_colours = _slice_colours(dark)
 
     assert light_colours != dark_colours
     assert set(dark_colours.values()) <= set(INCIDENT_TYPE_COLOURS["dark"])
@@ -259,7 +319,7 @@ def test_incident_type_chart_falls_back_to_light_palette_for_unknown_theme():
 
     fig = build_submissions_by_incident_type_chart(counts, theme=None)
 
-    assert fig.data[0].marker.color in INCIDENT_TYPE_COLOURS["light"]
+    assert fig.data[0].marker.colors[0] in INCIDENT_TYPE_COLOURS["light"]
 
 
 def test_submissions_by_incident_type_handles_a_missing_incident_column():
@@ -310,3 +370,136 @@ def test_incident_types_for_label_prefers_a_real_incident_named_other():
     all_types = [OTHER_INCIDENT_TYPE, "Storm event"]
 
     assert incident_types_for_label(OTHER_INCIDENT_TYPE, all_types) == {OTHER_INCIDENT_TYPE}
+
+
+def test_daily_submissions_counts_each_calendar_day():
+    submissions = [
+        {"created_at": "2026-09-01T08:00:00Z", "submission_id": 1},
+        {"created_at": "2026-09-01T19:30:00Z", "submission_id": 2},
+        {"created_at": "2026-09-02T09:00:00Z", "submission_id": 3},
+    ]
+
+    result = daily_submissions(submissions)
+
+    assert result["date"].astype(str).tolist() == ["2026-09-01", "2026-09-02"]
+    assert result["submissions"].tolist() == [2, 1]
+
+
+def test_daily_submissions_starts_at_the_earliest_date():
+    submissions = [
+        {"created_at": "2026-09-05T08:00:00Z", "submission_id": 1},
+        {"created_at": "2026-09-01T08:00:00Z", "submission_id": 2},
+    ]
+
+    result = daily_submissions(submissions)
+
+    dates = result["date"].astype(str).tolist()
+
+    assert dates[0] == "2026-09-01"
+    assert dates[-1] == "2026-09-05"
+
+
+def test_daily_submissions_fills_quiet_days_with_zero():
+    """A line drawn straight over a silent day would invent submissions."""
+    submissions = [
+        {"created_at": "2026-09-01T08:00:00Z", "submission_id": 1},
+        {"created_at": "2026-09-04T08:00:00Z", "submission_id": 2},
+    ]
+
+    result = daily_submissions(submissions)
+
+    assert result["date"].astype(str).tolist() == [
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+    ]
+    assert result["submissions"].tolist() == [1, 0, 0, 1]
+
+
+def test_daily_submissions_keeps_every_submission():
+    submissions = [{"created_at": f"2026-09-0{day}T08:00:00Z"} for day in range(1, 6)]
+
+    assert daily_submissions(submissions)["submissions"].sum() == 5
+
+
+def test_daily_submissions_prefers_the_submitted_at_column():
+    submissions = [
+        {"submitted_at": "2026-09-01T08:00:00Z", "created_at": "2026-08-01T08:00:00Z"},
+    ]
+
+    result = daily_submissions(submissions)
+
+    assert result["date"].astype(str).tolist() == ["2026-09-01"]
+
+
+def test_daily_submissions_ignores_rows_without_a_usable_date():
+    submissions = [
+        {"created_at": "2026-09-01T08:00:00Z"},
+        {"created_at": None},
+        {"created_at": "not a date"},
+    ]
+
+    result = daily_submissions(submissions)
+
+    assert result["submissions"].tolist() == [1]
+
+
+def test_daily_submissions_handles_mixed_timezone_offsets():
+    submissions = [
+        {"created_at": "2026-09-01T23:00:00+00:00"},
+        {"created_at": "2026-09-02T01:00:00+03:00"},
+    ]
+
+    result = daily_submissions(submissions)
+
+    assert result["submissions"].sum() == 2
+
+
+def test_daily_submissions_handles_empty_input():
+    result = daily_submissions([])
+
+    assert result.empty
+    assert list(result.columns) == ["date", "submissions"]
+
+
+def test_daily_submissions_handles_data_without_a_timestamp_column():
+    result = daily_submissions([{"submission_id": 1}])
+
+    assert result.empty
+
+
+def test_daily_submissions_does_not_mutate_the_caller_frame():
+    frame = pd.DataFrame([{"created_at": "2026-09-01T08:00:00Z"}])
+    before = frame.copy()
+
+    daily_submissions(frame)
+
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_daily_submissions_chart_exposes_selection_metadata():
+    submissions = [
+        {"created_at": "2026-09-01T08:00:00Z"},
+        {"created_at": "2026-09-02T08:00:00Z"},
+    ]
+
+    fig = build_daily_submissions_chart(daily_submissions(submissions))
+
+    assert len(fig.data) == 1
+    assert fig.data[0].customdata is not None
+
+
+def test_daily_submissions_chart_draws_a_line():
+    submissions = [{"created_at": "2026-09-01T08:00:00Z"}]
+
+    fig = build_daily_submissions_chart(daily_submissions(submissions))
+
+    assert fig.data[0].mode is not None
+    assert "lines" in fig.data[0].mode
+
+
+def test_daily_submissions_chart_handles_empty_input():
+    fig = build_daily_submissions_chart(daily_submissions([]))
+
+    assert fig is not None

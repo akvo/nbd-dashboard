@@ -24,10 +24,10 @@ A Streamlit dashboard for exploring NBD programme performance at county and ward
 
 | Chart | Clickable | Notes |
 | --- | --- | --- |
-| Weekly submission rate | Yes | Filters the table to the clicked week |
+| Daily submissions | Yes | Daily counts from the earliest submission onwards, with quiet days carried as zero. Clicking a point filters the table to that day |
 | Weekly submissions by channel | Yes | WhatsApp and USSD, inferred from the `wa-` / `ussd-` submitter prefix |
 | Submissions by ward | Yes | Filters the table to the clicked ward |
-| Submissions by incident type | Yes | Fixed per-incident hues that survive filtering, chosen per light/dark theme; incidents beyond the palette fold into a single "Other" bar that still drills down to all of them |
+| Reported incidents by type | Yes | Donut chart with the total in the hole. Fixed per-incident hues that survive filtering, chosen per light/dark theme; each slice is named where it is drawn, so identity never rests on colour alone. Incidents beyond the palette fold into a single "Other" slice that still drills down to all of them |
 | Champions per ward | Yes | One bar per ward, labelled with its champion — the person with the most approved reports there. Clicking a bar lists that champion's approved reports in that ward |
 | Cumulative submissions | No | Running total over time |
 

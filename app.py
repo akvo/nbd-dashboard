@@ -4,17 +4,18 @@ import streamlit as st
 from src.api import fetch_records, fetch_reference_records, load_api_config
 from src.charts import (
     build_cumulative_submissions_chart,
+    build_daily_submissions_chart,
     build_submissions_by_incident_type_chart,
     build_submissions_by_ward_chart,
     build_ward_champions_chart,
     build_weekly_submissions_by_channel_chart,
-    build_weekly_submissions_chart,
     incident_types_for_label,
 )
 from src.filters import ALL_OPTION, apply_filters, select_options
 from src.metrics import (
     champion_submissions,
     cumulative_submissions,
+    daily_submissions,
     distinct_submitters,
     normalize_incident_type_names,
     submissions_by_incident_type,
@@ -169,21 +170,27 @@ def _extract_incident_type_selection(chart_event) -> dict[str, str] | None:
         if customdata:
             return {"incident_type": customdata[0]}
 
+        # A donut slice is identified by its label, which Streamlit reports in
+        # place of custom data for some trace types.
+        label = point.get("label")
+        if label:
+            return {"incident_type": str(label)}
+
     return None
 
 
-def _extract_week_selection(chart_event) -> dict[str, str] | None:
+def _extract_day_selection(chart_event) -> dict[str, str] | None:
     for point in _extract_plotly_selection_points(chart_event):
         customdata = _extract_customdata(point)
         if customdata:
-            return {"week": customdata[0]}
+            return {"day": customdata[0]}
 
     return None
 
 
 def _filter_selected_submissions(
     dataframe: pd.DataFrame,
-    selected_week: dict[str, str] | None = None,
+    selected_day: dict[str, str] | None = None,
     selected_week_channel: dict[str, str] | None = None,
     selected_ward: dict[str, str] | None = None,
     selected_incident_type: dict[str, str] | None = None,
@@ -195,19 +202,21 @@ def _filter_selected_submissions(
 
     selected_df = dataframe.copy()
 
-    def _filter_by_week(df: pd.DataFrame, week_value: str | None) -> pd.DataFrame:
-        if not week_value:
+    def _filter_by_period(df: pd.DataFrame, start_value: str | None, length: pd.Timedelta) -> pd.DataFrame:
+        if not start_value:
             return df
 
-        week_start = pd.Timestamp(pd.to_datetime(week_value))
-        week_end = week_start + pd.Timedelta(weeks=1)
+        start = pd.Timestamp(pd.to_datetime(start_value)).normalize()
+        end = start + length
 
         timestamp_column = "submitted_at" if "submitted_at" in df.columns else "created_at"
         if timestamp_column not in df.columns:
             return df
 
-        timestamps = pd.to_datetime(df[timestamp_column], errors="coerce")
-        return df[(timestamps >= week_start) & (timestamps < week_end)].copy()
+        # The daily counts are taken in UTC, so the rows behind a point are
+        # matched in UTC too and a bar's count cannot disagree with its table.
+        timestamps = pd.to_datetime(df[timestamp_column], errors="coerce", utc=True).dt.tz_convert(None)
+        return df[(timestamps >= start) & (timestamps < end)].copy()
 
     if selected_ward and selected_ward.get("ward"):
         ward = str(selected_ward["ward"])
@@ -231,11 +240,13 @@ def _filter_selected_submissions(
             champion=selected_champion.get("champion"),
         )
 
-    if selected_week:
-        selected_df = _filter_by_week(selected_df, selected_week.get("week"))
+    if selected_day:
+        selected_df = _filter_by_period(selected_df, selected_day.get("day"), pd.Timedelta(days=1))
 
     if selected_week_channel:
-        selected_df = _filter_by_week(selected_df, selected_week_channel.get("week"))
+        selected_df = _filter_by_period(
+            selected_df, selected_week_channel.get("week"), pd.Timedelta(weeks=1)
+        )
 
         channel = selected_week_channel.get("channel", "unknown")
         if channel != "unknown":
@@ -322,7 +333,7 @@ def load_dashboard_data():
 
 st.title("NBD Pollution Reporting Summary")
 
-weekly_submissions_chart = None
+daily_submissions_chart = None
 
 with st.spinner("Loading dashboard data..."):
     dashboard_data = load_dashboard_data()
@@ -399,6 +410,7 @@ valid_submissions = (
 )
 
 ward_champions_df = ward_champions(filtered_submissions)
+daily_submissions_df = daily_submissions(valid_submissions)
 weekly_submissions_df = weekly_submissions(valid_submissions)
 weekly_submissions_by_channel_df = weekly_submissions_by_channel(valid_submissions)
 submissions_by_ward_df = submissions_by_ward(valid_submissions)
@@ -432,14 +444,14 @@ with col4:
     else:
         st.metric("Current week", current_week_count, f"{current_week_change:+.2f}% vs previous week")
 
-st.subheader("Weekly submission rate")
+st.subheader("Daily submissions")
 if valid_submissions.empty:
-    st.write("No weekly submission data available for the selected filters.")
+    st.write("No daily submission data available for the selected filters.")
 else:
-    weekly_submissions_chart = st.plotly_chart(
-        build_weekly_submissions_chart(weekly_submissions_df),
+    daily_submissions_chart = st.plotly_chart(
+        build_daily_submissions_chart(daily_submissions_df),
         on_select="rerun",
-        key="weekly_submissions_chart",
+        key="daily_submissions_chart",
         selection_mode="points",
         use_container_width=True,
     )
@@ -451,14 +463,6 @@ weekly_channel_chart = st.plotly_chart(
     selection_mode="points",
     use_container_width=True,
 )
-ward_chart = st.plotly_chart(
-    build_submissions_by_ward_chart(submissions_by_ward_df),
-    on_select="rerun",
-    key="ward_chart",
-    selection_mode="points",
-    use_container_width=True,
-)
-
 incident_type_chart = st.plotly_chart(
     build_submissions_by_incident_type_chart(
         submissions_by_incident_type_df,
@@ -471,28 +475,44 @@ incident_type_chart = st.plotly_chart(
     use_container_width=True,
 )
 
-st.subheader("Champions per ward")
-st.caption("The champion of a ward is the person with the most approved reports there.")
-champion_chart = None
-if ward_champions_df.empty:
-    st.write("No champions available for the selected filters.")
-else:
-    champion_chart = st.plotly_chart(
-        build_ward_champions_chart(ward_champions_df),
+# Ward totals and ward champions answer the same question from two sides, so
+# they share a row to make them easy to read against each other.
+ward_column, champion_column = st.columns(2)
+
+with ward_column:
+    st.subheader("Submissions by ward")
+    st.caption("Total submissions recorded in each ward.")
+    ward_chart = st.plotly_chart(
+        build_submissions_by_ward_chart(submissions_by_ward_df),
         on_select="rerun",
-        key="champion_chart",
+        key="ward_chart",
         selection_mode="points",
         use_container_width=True,
     )
 
+with champion_column:
+    st.subheader("Champions per ward")
+    st.caption("The champion of a ward is the person with the most approved reports there.")
+    champion_chart = None
+    if ward_champions_df.empty:
+        st.write("No champions available for the selected filters.")
+    else:
+        champion_chart = st.plotly_chart(
+            build_ward_champions_chart(ward_champions_df),
+            on_select="rerun",
+            key="champion_chart",
+            selection_mode="points",
+            use_container_width=True,
+        )
+
 selected_week_channel = _extract_weekly_channel_selection(weekly_channel_chart)
 selected_ward_selection = _extract_ward_selection(ward_chart)
-selected_week = _extract_week_selection(weekly_submissions_chart)
+selected_day = _extract_day_selection(daily_submissions_chart)
 selected_incident_type = _extract_incident_type_selection(incident_type_chart)
 selected_champion = _extract_champion_selection(champion_chart)
 selected_submissions = _filter_selected_submissions(
     filtered_submissions,
-    selected_week=selected_week,
+    selected_day=selected_day,
     selected_week_channel=selected_week_channel,
     selected_ward=selected_ward_selection,
     selected_incident_type=selected_incident_type,
@@ -511,7 +531,7 @@ else:
 
 st.subheader("Submissions")
 if (
-    selected_week
+    selected_day
     or selected_week_channel
     or selected_ward_selection
     or selected_incident_type

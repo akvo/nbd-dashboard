@@ -79,6 +79,42 @@ def cumulative_submissions(submissions: list[dict[str, Any]] | pd.DataFrame) -> 
     return weekly
 
 
+def daily_submissions(submissions: list[dict[str, Any]] | pd.DataFrame) -> pd.DataFrame:
+    """Return one row per calendar day, from the earliest submission onwards.
+
+    Days on which nobody reported are carried as zero rather than dropped: a
+    line drawn straight from one busy day to the next would otherwise read as
+    steady reporting across a silent stretch.
+    """
+    empty = pd.DataFrame(columns=["date", "submissions"])
+
+    df = submissions if isinstance(submissions, pd.DataFrame) else pd.DataFrame(submissions)
+    if df.empty:
+        return empty
+
+    timestamp_column = _resolve_timestamp_column(df)
+    if timestamp_column is None:
+        return empty
+
+    # Timestamps arrive with mixed offsets, so they are read as UTC before the
+    # day is taken; otherwise two rows an hour apart can land on separate days.
+    parsed_dates = pd.to_datetime(df[timestamp_column], errors="coerce", utc=True)
+    days = parsed_dates.dropna().dt.tz_convert(None).dt.normalize()
+
+    if days.empty:
+        return empty
+
+    counts = days.value_counts().sort_index()
+    every_day = pd.date_range(counts.index.min(), counts.index.max(), freq="D")
+
+    return pd.DataFrame(
+        {
+            "date": every_day,
+            "submissions": counts.reindex(every_day, fill_value=0).to_numpy(dtype=int),
+        }
+    )
+
+
 def weekly_submissions(submissions: list[dict[str, Any]] | pd.DataFrame) -> pd.DataFrame:
     """Return weekly submissions grouped by ISO week."""
     df = submissions if isinstance(submissions, pd.DataFrame) else pd.DataFrame(submissions)
